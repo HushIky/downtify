@@ -58,8 +58,8 @@ jobs:
           context: .
           push: true
           tags: |
-            henriquesebastiao/downtify:latest
-            henriquesebastiao/downtify:${{ steps.version.outputs.VERSION }}
+            hush114514/downtify:latest
+            hush114514/downtify:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
           platforms: linux/amd64,linux/arm64
