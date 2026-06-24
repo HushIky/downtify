@@ -89,6 +89,7 @@ export default {
     urlPlaceholder: 'Paste a Spotify playlist URL…',
     artistUrlPlaceholder: 'Paste a Spotify artist URL…',
     urlPlaceholderMixed: 'Paste a Spotify playlist or artist URL…',
+    backfillOption: 'Only monitor new releases (do not download catalog)',
     watch: 'Watch',
     failedAdd: 'Failed to add. Check the URL and try again.',
     failedAddArtist: 'Failed to add artist. Check the URL and try again.',

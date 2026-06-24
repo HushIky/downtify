@@ -56,6 +56,16 @@
             </button>
           </div>
         </form>
+        <div v-if="isArtistUrl" class="mt-3 flex items-center gap-2">
+          <label class="flex items-center gap-2 cursor-pointer text-xs text-base-content/60">
+            <input
+              v-model="backfill"
+              type="checkbox"
+              class="checkbox checkbox-xs checkbox-primary"
+            />
+            <span>{{ t('monitor.backfillOption') }}</span>
+          </label>
+        </div>
         <p v-if="addError" class="mt-2 text-xs text-error">{{ addError }}</p>
       </div>
 
@@ -213,7 +223,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import Navbar from '/src/components/Navbar.vue'
 import Settings from '/src/components/Settings.vue'
@@ -229,6 +239,11 @@ const addError = ref('')
 const newUrl = ref('')
 const newInterval = ref(60)
 const checking = ref({})
+const backfill = ref(false)
+
+const isArtistUrl = computed(() => {
+  return /spotify\.com\/(?:intl-[a-z]{2}\/)?artist\//.test(newUrl.value) || newUrl.value.startsWith('spotify:artist:')
+})
 
 async function load() {
   loading.value = true
@@ -246,10 +261,12 @@ async function onAdd() {
   try {
     const res = await monitorAPI.addMonitoredPlaylist(
       newUrl.value.trim(),
-      newInterval.value
+      newInterval.value,
+      backfill.value
     )
     playlists.value.unshift(res.data)
     newUrl.value = ''
+    backfill.value = false
   } catch (e) {
     addError.value = e?.response?.data?.detail || t('monitor.failedAdd')
   } finally {

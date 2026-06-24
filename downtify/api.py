@@ -643,6 +643,7 @@ async def add_monitor_playlist(request: Request) -> dict[str, Any]:
 
     url = payload.get('url', '')
     interval_minutes = int(payload.get('interval_minutes', 60))
+    backfill = bool(payload.get('backfill', False))
 
     parsed = spotify.parse_spotify_url(url)
     if parsed is None or parsed[0] not in ('playlist', 'artist'):
@@ -671,7 +672,22 @@ async def add_monitor_playlist(request: Request) -> dict[str, Any]:
             db.add_playlist, spotify_id, name, url, interval_minutes, type='artist'
         )
 
-        if state.downloader is not None:
+        if backfill:
+            try:
+                album_ids = await asyncio.to_thread(
+                    spotify.artist_releases_from_id, spotify_id, 'album'
+                )
+                single_ids = await asyncio.to_thread(
+                    spotify.artist_releases_from_id, spotify_id, 'single'
+                )
+                for rel_id in set(album_ids + single_ids):
+                    await asyncio.to_thread(db.mark_release_downloaded, playlist.id, rel_id)
+            except Exception:
+                logger.exception('Failed to backfill releases for artist {}', spotify_id)
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await asyncio.to_thread(db.update_playlist, playlist.id, last_checked=now_iso)
+        elif state.downloader is not None:
             loop = state.loop or asyncio.get_running_loop()
 
             async def _initial_check(pl=playlist) -> None:
@@ -687,7 +703,6 @@ async def add_monitor_playlist(request: Request) -> dict[str, Any]:
                     )
                 except Exception:
                     logger.exception('Initial check failed for artist {}', pl.id)
-
             asyncio.create_task(_initial_check())
 
         return playlist.to_dict()

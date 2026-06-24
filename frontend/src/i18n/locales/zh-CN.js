@@ -86,6 +86,7 @@ export default {
     urlPlaceholder: '粘贴 Spotify 歌单链接…',
     artistUrlPlaceholder: '粘贴 Spotify 歌手链接…',
     urlPlaceholderMixed: '粘贴 Spotify 歌单或歌手链接…',
+    backfillOption: '仅监控新发布（不下载历史作品）',
     watch: '开启监控',
     failedAdd: '添加监控失败。请检查链接并重试。',
     failedAddArtist: '添加歌手失败。请检查链接并重试。',
