@@ -60,8 +60,6 @@ jobs:
           tags: |
             hush114514/downtify:latest
             hush114514/downtify:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
           platforms: linux/amd64,linux/arm64
           build-args: |
             DOCKER_METADATA_OUTPUT_JSON
