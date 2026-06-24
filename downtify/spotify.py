@@ -711,6 +711,122 @@ def _id_from_uri(uri: str) -> str:
     return parts[-1] if parts else ''
 
 
+def _get_anonymous_token() -> str:
+    """Fetch an anonymous Spotify access token using a default playlist embed."""
+    payload = _fetch_embed_json('playlist', '37i9dQZF1DXcBWIGoYBM5M')
+    token = _token_from_embed_payload(payload)
+    if not token:
+        raise ValueError('Failed to fetch anonymous Spotify access token')
+    return token
+
+
+def artist_info_from_id(artist_id: str) -> dict[str, Any]:
+    """Fetch artist metadata (e.g. name) via GraphQL."""
+    token = _get_anonymous_token()
+    params = {
+        'operationName': 'queryArtistOverview',
+        'variables': json.dumps({
+            'uri': f'spotify:artist:{artist_id}',
+            'locale': 'en',
+        }),
+        'extensions': json.dumps({
+            'persistedQuery': {
+                'version': 1,
+                'sha256Hash': 'ae0e2958a4ab645b35ca19ac04d0495ae12d9c5d7b7286217674801a9aab281a',
+            }
+        })
+    }
+    resp = requests.get(
+        _PARTNER_API,
+        params=params,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'User-Agent': _USER_AGENT,
+            'app-platform': 'WebPlayer',
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if 'errors' in data:
+        raise ValueError(f"GraphQL errors: {data['errors']}")
+    artist_union = data.get('data', {}).get('artistUnion')
+    if not artist_union:
+        raise ValueError('Artist not found')
+    return {
+        'id': artist_id,
+        'name': artist_union.get('profile', {}).get('name') or '',
+        'uri': artist_union.get('uri') or '',
+    }
+
+
+def artist_releases_from_id(
+    artist_id: str, release_type: str = 'album'
+) -> list[str]:
+    """Fetch all release IDs (albums or singles) for an artist."""
+    token = _get_anonymous_token()
+    operation_name = (
+        'queryArtistDiscographyAlbums'
+        if release_type == 'album'
+        else 'queryArtistDiscographySingles'
+    )
+    discog_key = 'albums' if release_type == 'album' else 'singles'
+
+    release_ids: list[str] = []
+    offset = 0
+    limit = 100
+    while True:
+        params = {
+            'operationName': operation_name,
+            'variables': json.dumps({
+                'uri': f'spotify:artist:{artist_id}',
+                'offset': offset,
+                'limit': limit,
+            }),
+            'extensions': json.dumps({
+                'persistedQuery': {
+                    'version': 1,
+                    'sha256Hash': '5e07d323febb57b4a56a42abbf781490e58764aa45feb6e3dc0591564fc56599',
+                }
+            })
+        }
+        resp = requests.get(
+            _PARTNER_API,
+            params=params,
+            headers={
+                'Authorization': f'Bearer {token}',
+                'User-Agent': _USER_AGENT,
+                'app-platform': 'WebPlayer',
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if 'errors' in data:
+            raise ValueError(f"GraphQL errors: {data['errors']}")
+
+        artist_union = data.get('data', {}).get('artistUnion')
+        if not artist_union:
+            break
+
+        discog = artist_union.get('discography', {}).get(discog_key, {})
+        items = discog.get('items') or []
+        for item in items:
+            releases = item.get('releases') or {}
+            for r_item in releases.get('items') or []:
+                if r_item.get('id'):
+                    release_ids.append(r_item['id'])
+
+        total = discog.get('totalCount') or 0
+        offset += len(items)
+        if not items or offset >= total:
+            break
+
+    return release_ids
+
+
+
+
 def resolve(url: str) -> Any:
     """Resolve any Spotify URL to a single song or a list of songs."""
 

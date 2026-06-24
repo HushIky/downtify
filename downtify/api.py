@@ -763,3 +763,145 @@ async def manual_check_playlist(playlist_id: int) -> dict[str, Any]:
 
     asyncio.create_task(_run())
     return {'status': 'check_started', 'id': playlist_id}
+
+
+# ---------------------------------------------------------------------------
+# Artist monitoring endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get('/api/monitor/artists')
+async def list_monitor_artists() -> list[dict[str, Any]]:
+    db = _require_monitor_db()
+    artists = await asyncio.to_thread(db.list_artists)
+    return [a.to_dict() for a in artists]
+
+
+@router.post('/api/monitor/artists')
+async def add_monitor_artist(request: Request) -> dict[str, Any]:
+    from datetime import datetime, timezone
+    db = _require_monitor_db()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    url = payload.get('url', '')
+    interval_minutes = int(payload.get('interval_minutes', 60))
+
+    parsed = spotify.parse_spotify_url(url)
+    if parsed is None or parsed[0] != 'artist':
+        raise HTTPException(
+            status_code=400, detail='A valid Spotify artist URL is required'
+        )
+
+    _, spotify_id = parsed
+
+    existing = await asyncio.to_thread(db.get_artist_by_spotify_id, spotify_id)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail='This artist is already being monitored'
+        )
+
+    try:
+        metadata = await asyncio.to_thread(spotify.artist_info_from_id, spotify_id)
+        name = metadata['name']
+    except Exception as exc:
+        logger.exception('Failed to resolve artist {}', spotify_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    artist = await asyncio.to_thread(
+        db.add_artist, spotify_id, name, url, interval_minutes
+    )
+
+    # First Pass: Mark all existing releases as downloaded so we only download new ones.
+    try:
+        album_ids = await asyncio.to_thread(
+            spotify.artist_releases_from_id, spotify_id, 'album'
+        )
+        single_ids = await asyncio.to_thread(
+            spotify.artist_releases_from_id, spotify_id, 'single'
+        )
+        for rel_id in set(album_ids + single_ids):
+            await asyncio.to_thread(db.mark_release_downloaded, artist.id, rel_id)
+    except Exception:
+        logger.exception('Failed to backfill releases for artist {}', spotify_id)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await asyncio.to_thread(db.update_artist, artist.id, last_checked=now_iso)
+    updated_artist = await asyncio.to_thread(db.get_artist, artist.id)
+    return updated_artist.to_dict() if updated_artist else artist.to_dict()
+
+
+@router.patch('/api/monitor/artists/{artist_id}')
+async def update_monitor_artist(
+    artist_id: int, request: Request
+) -> dict[str, Any]:
+    db = _require_monitor_db()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    kwargs: dict[str, Any] = {}
+    if 'interval_minutes' in payload:
+        kwargs['interval_minutes'] = int(payload['interval_minutes'])
+    if 'enabled' in payload:
+        kwargs['enabled'] = bool(payload['enabled'])
+
+    updated = await asyncio.to_thread(
+        db.update_artist, artist_id, **kwargs
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail='Monitored artist not found'
+        )
+    return updated.to_dict()
+
+
+@router.delete('/api/monitor/artists/{artist_id}')
+async def delete_monitor_artist(artist_id: int) -> dict[str, Any]:
+    db = _require_monitor_db()
+    deleted = await asyncio.to_thread(db.delete_artist, artist_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404, detail='Monitored artist not found'
+        )
+    return {'deleted': True, 'id': artist_id}
+
+
+@router.post('/api/monitor/artists/{artist_id}/check')
+async def manual_check_artist(artist_id: int) -> dict[str, Any]:
+    db = _require_monitor_db()
+    artist = await asyncio.to_thread(db.get_artist, artist_id)
+    if artist is None:
+        raise HTTPException(
+            status_code=404, detail='Monitored artist not found'
+        )
+    if state.downloader is None:
+        raise HTTPException(status_code=500, detail='Downloader not ready')
+
+    loop = state.loop or asyncio.get_running_loop()
+
+    async def _run() -> None:
+        try:
+            from .monitor import check_artist
+            count = await check_artist(
+                artist,  # type: ignore[arg-type]
+                db,
+                state.downloader,  # type: ignore[arg-type]
+                state.connections.broadcast,
+                loop,
+            )
+            logger.info(
+                'Manual check: downloaded {} new track(s) from artist "{}"',
+                count,
+                artist.name,
+            )
+        except Exception:
+            logger.exception(
+                'Manual check failed for artist {}', artist_id
+            )
+
+    asyncio.create_task(_run())
+    return {'status': 'check_started', 'id': artist_id}
