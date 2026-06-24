@@ -46,21 +46,7 @@ class MonitoredPlaylist:
     last_checked: Optional[str]
     last_track_count: int
     created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
-class MonitoredArtist:
-    id: int
-    spotify_id: str
-    name: str
-    url: str
-    interval_minutes: int
-    enabled: bool
-    last_checked: Optional[str]
-    created_at: str
+    type: str = 'playlist'
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,7 +76,8 @@ class PlaylistMonitorDB:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     last_checked TEXT,
                     last_track_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'playlist'
                 );
                 CREATE TABLE IF NOT EXISTS downloaded_tracks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,30 +88,27 @@ class PlaylistMonitorDB:
                         ON DELETE CASCADE,
                     UNIQUE(playlist_id, track_spotify_id)
                 );
-                CREATE TABLE IF NOT EXISTS monitored_artists (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    spotify_id TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    interval_minutes INTEGER NOT NULL DEFAULT 60,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    last_checked TEXT,
-                    created_at TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS downloaded_artist_releases (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    artist_id INTEGER NOT NULL,
+                    monitor_id INTEGER NOT NULL,
                     release_spotify_id TEXT NOT NULL,
                     downloaded_at TEXT NOT NULL,
-                    FOREIGN KEY (artist_id) REFERENCES monitored_artists(id)
+                    FOREIGN KEY (monitor_id) REFERENCES monitored_playlists(id)
                         ON DELETE CASCADE,
-                    UNIQUE(artist_id, release_spotify_id)
+                    UNIQUE(monitor_id, release_spotify_id)
                 );
             """)
             # Migration: add filename column if it doesn't exist yet
             try:
                 conn.execute(
                     'ALTER TABLE downloaded_tracks ADD COLUMN filename TEXT'
+                )
+            except Exception:
+                pass
+            # Migration: add type column if it doesn't exist yet
+            try:
+                conn.execute(
+                    "ALTER TABLE monitored_playlists ADD COLUMN type TEXT NOT NULL DEFAULT 'playlist'"
                 )
             except Exception:
                 pass
@@ -135,13 +119,14 @@ class PlaylistMonitorDB:
         name: str,
         url: str,
         interval_minutes: int = 60,
+        type: str = 'playlist',
     ) -> MonitoredPlaylist:
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO monitored_playlists
-                   (spotify_id, name, url, interval_minutes, enabled, created_at)
-                   VALUES (?, ?, ?, ?, 1, ?)""",
-                (spotify_id, name, url, interval_minutes, _now_iso()),
+                   (spotify_id, name, url, interval_minutes, enabled, created_at, type)
+                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                (spotify_id, name, url, interval_minutes, _now_iso(), type),
             )
             row = conn.execute(
                 'SELECT * FROM monitored_playlists WHERE id = ?',
@@ -236,105 +221,27 @@ class PlaylistMonitorDB:
                 (playlist_id, track_spotify_id, _now_iso(), filename),
             )
 
-    def add_artist(
-        self,
-        spotify_id: str,
-        name: str,
-        url: str,
-        interval_minutes: int = 60,
-    ) -> MonitoredArtist:
-        with self._connect() as conn:
-            cur = conn.execute(
-                """INSERT INTO monitored_artists
-                   (spotify_id, name, url, interval_minutes, enabled, created_at)
-                   VALUES (?, ?, ?, ?, 1, ?)""",
-                (spotify_id, name, url, interval_minutes, _now_iso()),
-            )
-            row = conn.execute(
-                'SELECT * FROM monitored_artists WHERE id = ?',
-                (cur.lastrowid,),
-            ).fetchone()
-            return _row_to_artist(row)
-
-    def list_artists(self) -> list[MonitoredArtist]:
+    def get_downloaded_releases(self, monitor_id: int) -> set[str]:
         with self._connect() as conn:
             rows = conn.execute(
-                'SELECT * FROM monitored_artists ORDER BY created_at DESC'
-            ).fetchall()
-            return [_row_to_artist(r) for r in rows]
-
-    def get_artist(self, artist_id: int) -> Optional[MonitoredArtist]:
-        with self._connect() as conn:
-            row = conn.execute(
-                'SELECT * FROM monitored_artists WHERE id = ?',
-                (artist_id,),
-            ).fetchone()
-            return _row_to_artist(row) if row else None
-
-    def get_artist_by_spotify_id(
-        self, spotify_id: str
-    ) -> Optional[MonitoredArtist]:
-        with self._connect() as conn:
-            row = conn.execute(
-                'SELECT * FROM monitored_artists WHERE spotify_id = ?',
-                (spotify_id,),
-            ).fetchone()
-            return _row_to_artist(row) if row else None
-
-    def delete_artist(self, artist_id: int) -> bool:
-        with self._connect() as conn:
-            cur = conn.execute(
-                'DELETE FROM monitored_artists WHERE id = ?',
-                (artist_id,),
-            )
-            return cur.rowcount > 0
-
-    def update_artist(
-        self, artist_id: int, **kwargs: Any
-    ) -> Optional[MonitoredArtist]:
-        allowed = {
-            'interval_minutes',
-            'enabled',
-            'last_checked',
-            'name',
-        }
-        updates = {k: v for k, v in kwargs.items() if k in allowed}
-        if not updates:
-            return self.get_artist(artist_id)
-        set_clause = ', '.join(f'{k} = ?' for k in updates)
-        values = list(updates.values()) + [artist_id]
-        with self._connect() as conn:
-            conn.execute(
-                f'UPDATE monitored_artists SET {set_clause} WHERE id = ?',
-                values,
-            )
-            row = conn.execute(
-                'SELECT * FROM monitored_artists WHERE id = ?',
-                (artist_id,),
-            ).fetchone()
-            return _row_to_artist(row) if row else None
-
-    def get_downloaded_releases(self, artist_id: int) -> set[str]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                'SELECT release_spotify_id FROM downloaded_artist_releases WHERE artist_id = ?',
-                (artist_id,),
+                'SELECT release_spotify_id FROM downloaded_artist_releases WHERE monitor_id = ?',
+                (monitor_id,),
             ).fetchall()
             return {r['release_spotify_id'] for r in rows}
 
     def mark_release_downloaded(
         self,
-        artist_id: int,
+        monitor_id: int,
         release_spotify_id: str,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO downloaded_artist_releases
-                   (artist_id, release_spotify_id, downloaded_at)
+                   (monitor_id, release_spotify_id, downloaded_at)
                    VALUES (?, ?, ?)
-                   ON CONFLICT(artist_id, release_spotify_id) DO UPDATE SET
+                   ON CONFLICT(monitor_id, release_spotify_id) DO UPDATE SET
                    downloaded_at=excluded.downloaded_at""",
-                (artist_id, release_spotify_id, _now_iso()),
+                (monitor_id, release_spotify_id, _now_iso()),
             )
 
 
@@ -349,19 +256,7 @@ def _row_to_playlist(row: sqlite3.Row) -> MonitoredPlaylist:
         last_checked=row['last_checked'],
         last_track_count=row['last_track_count'],
         created_at=row['created_at'],
-    )
-
-
-def _row_to_artist(row: sqlite3.Row) -> MonitoredArtist:
-    return MonitoredArtist(
-        id=row['id'],
-        spotify_id=row['spotify_id'],
-        name=row['name'],
-        url=row['url'],
-        interval_minutes=row['interval_minutes'],
-        enabled=bool(row['enabled']),
-        last_checked=row['last_checked'],
-        created_at=row['created_at'],
+        type=row['type'],
     )
 
 
@@ -528,7 +423,7 @@ def _regenerate_m3u(
 
 
 async def check_artist(
-    artist: MonitoredArtist,
+    artist: MonitoredPlaylist,
     db: PlaylistMonitorDB,
     downloader: Downloader,
     broadcast: Callable[[dict[str, Any]], Any],
@@ -553,7 +448,7 @@ async def check_artist(
     except Exception:
         logger.exception('Failed to fetch releases for artist {}', artist.spotify_id)
         await asyncio.to_thread(
-            db.update_artist, artist.id, last_checked=_now_iso()
+            db.update_playlist, artist.id, last_checked=_now_iso()
         )
         return 0
 
@@ -606,7 +501,7 @@ async def check_artist(
         await asyncio.to_thread(db.mark_release_downloaded, artist.id, rel_id)
 
     await asyncio.to_thread(
-        db.update_artist,
+        db.update_playlist,
         artist.id,
         last_checked=_now_iso(),
     )
@@ -623,56 +518,40 @@ async def monitor_loop(
     """Background task: sweep all enabled playlists and artists that are due for checking."""
     while True:
         try:
-            # 1. Sweep monitored playlists
-            playlists = await asyncio.to_thread(db.list_playlists)
-            for pl in playlists:
-                if not pl.enabled:
+            items = await asyncio.to_thread(db.list_playlists)
+            for item in items:
+                if not item.enabled:
                     continue
-                if not _is_due(pl.last_checked, pl.interval_minutes):
-                    continue
-                downloader = get_downloader()
-                if downloader is None:
-                    continue
-                try:
-                    count = await check_playlist(
-                        pl, db, downloader, broadcast, loop, settings
-                    )
-                    if count > 0:
-                        logger.info(
-                            'Auto-downloaded {} new track(s) from playlist "{}"',
-                            count,
-                            pl.name,
-                        )
-                except Exception:
-                    logger.exception(
-                        'Error while checking playlist "{}"', pl.name
-                    )
-
-            # 2. Sweep monitored artists
-            artists = await asyncio.to_thread(db.list_artists)
-            for art in artists:
-                if not art.enabled:
-                    continue
-                if not _is_due(art.last_checked, art.interval_minutes):
+                if not _is_due(item.last_checked, item.interval_minutes):
                     continue
                 downloader = get_downloader()
                 if downloader is None:
                     continue
                 try:
-                    count = await check_artist(
-                        art, db, downloader, broadcast, loop, settings
-                    )
-                    if count > 0:
-                        logger.info(
-                            'Auto-downloaded {} new track(s) from artist "{}"',
-                            count,
-                            art.name,
+                    if item.type == 'artist':
+                        count = await check_artist(
+                            item, db, downloader, broadcast, loop, settings
                         )
+                        if count > 0:
+                            logger.info(
+                                'Auto-downloaded {} new track(s) from artist "{}"',
+                                count,
+                                item.name,
+                            )
+                    else:
+                        count = await check_playlist(
+                            item, db, downloader, broadcast, loop, settings
+                        )
+                        if count > 0:
+                            logger.info(
+                                'Auto-downloaded {} new track(s) from playlist "{}"',
+                                count,
+                                item.name,
+                            )
                 except Exception:
                     logger.exception(
-                        'Error while checking artist "{}"', art.name
+                        'Error while checking {} "{}"', item.type, item.name
                     )
-
         except Exception:
             logger.exception('Unexpected error in monitor loop')
         await asyncio.sleep(MONITOR_LOOP_INTERVAL)
