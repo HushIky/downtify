@@ -671,23 +671,26 @@ async def add_monitor_playlist(request: Request) -> dict[str, Any]:
             db.add_playlist, spotify_id, name, url, interval_minutes, type='artist'
         )
 
-        # First Pass: Mark all existing releases as downloaded so we only download new ones.
-        try:
-            album_ids = await asyncio.to_thread(
-                spotify.artist_releases_from_id, spotify_id, 'album'
-            )
-            single_ids = await asyncio.to_thread(
-                spotify.artist_releases_from_id, spotify_id, 'single'
-            )
-            for rel_id in set(album_ids + single_ids):
-                await asyncio.to_thread(db.mark_release_downloaded, playlist.id, rel_id)
-        except Exception:
-            logger.exception('Failed to backfill releases for artist {}', spotify_id)
+        if state.downloader is not None:
+            loop = state.loop or asyncio.get_running_loop()
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        await asyncio.to_thread(db.update_playlist, playlist.id, last_checked=now_iso)
-        updated_playlist = await asyncio.to_thread(db.get_playlist, playlist.id)
-        return updated_playlist.to_dict() if updated_playlist else playlist.to_dict()
+            async def _initial_check(pl=playlist) -> None:
+                try:
+                    from .monitor import check_artist
+                    await check_artist(
+                        pl,
+                        db,
+                        state.downloader,  # type: ignore[arg-type]
+                        state.connections.broadcast,
+                        loop,
+                        state.settings,
+                    )
+                except Exception:
+                    logger.exception('Initial check failed for artist {}', pl.id)
+
+            asyncio.create_task(_initial_check())
+
+        return playlist.to_dict()
 
     else:
         try:
